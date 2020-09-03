@@ -1,0 +1,409 @@
+#include "encoders.h"
+#include "pid.h"
+#include "kinematics.h"
+#include "line_sensors.h"
+
+#define LOOP_DELAY 10
+#define L_PWM_PIN 10
+#define L_DIR_PIN 16
+#define R_PWM_PIN  9
+#define R_DIR_PIN 15
+#define BAUD_RATE = 115200;
+#define LINE_LEFT_PIN A2 //Pin for the left line sensor
+#define LINE_CENTRE_PIN A3 //Pin for the centre line sensor
+#define LINE_RIGHT_PIN A4 //Pin for the right line sensor
+#define BUZZER_PIN 6
+
+
+float target_position = 0; //home encoder count
+float target_degree = 0; //home angle
+float Hdegree = 0; // Home angle
+float Ldata = 0;  // left
+float Cdata = 0;  // center
+float Rdata = 0;  // right
+float velocity_1 = 30; // stare speed
+float velocity_2 = 20;
+float theta = 0;
+float x = 0;
+float y = 0;
+float distance = 0;
+float arc = 0;
+float headingFix = 0;
+float Turnhead = 0;
+float ave = 0;
+float initialX = 0; //mm
+float initialY = 0; //mm
+float initialTheta = 0;
+
+unsigned long time_now = millis();
+unsigned long time_elapsed = 0;
+unsigned long time_read = millis();
+
+int d = 0; //difference between left sensor and right sensor
+int ave_speed = 0;
+int w = 0;
+int i = 0;
+
+bool flag = true;
+bool flagTurn = true;
+bool flagStraight = false;
+
+Kinematics coordinates(initialX, initialY, initialTheta); //kinematics object
+
+Line_Sensor lineLeft(LINE_LEFT_PIN); //Create a line sensor object for the left sensor
+Line_Sensor lineCentre(LINE_CENTRE_PIN); //Create a line sensor object for the centre sensor
+Line_Sensor lineRight(LINE_RIGHT_PIN); //Create a line sensor object for the right sensor
+
+
+// ALL PID CONTROL
+
+//Go home Position control
+float Kp_position = 0.099; 
+float Kd_position = -0.05; 
+float Ki_position = 0.000003; 
+PID leftposition(Kp_position, Kd_position, Ki_position); 
+PID rightposition(Kp_position, Kd_position, Ki_position);
+
+//Line following speed control
+float Kp = 0.19;
+float Kd = 0;
+float Ki = 0;
+PID leftWeel(Kp, Kd, Ki); 
+PID rightWeel(Kp, Kd, Ki);
+
+//Back home speed control
+float Kp_back = 0.79; 
+float Kd_back = 0; 
+float Ki_back = 0.01; 
+PID BackHomeSpeed(Kp_back, Kd_back, Ki_back);
+
+//Back home Position control 
+float Kp_BackHomeSpeed = 1; 
+float Kd_BackHomeSpeed = 0; 
+float Ki_BackHomeSpeed = 0.01; 
+PID leftBackHomeSpeed(Kp_BackHomeSpeed, Kd_BackHomeSpeed, Ki_BackHomeSpeed); 
+PID rightBackHomeSpeed(Kp_BackHomeSpeed, Kd_BackHomeSpeed, Ki_BackHomeSpeed);
+ 
+float Kp_degree = 0.095;
+float Kd_degree = -0.05;
+float Ki_degree = 0.0002;
+PID leftAngle(Kp_degree, Kd_degree, Ki_degree); //back home Rotation controller
+PID rightAngle(Kp_degree, Kd_degree, Ki_degree);
+
+
+float Kp_count = 0.1;
+float Kd_count = -0.04;
+float Ki_count = 0;
+PID leftCount(Kp_count, Kd_count, Ki_count); //first case go straight controller
+PID rightCount(Kp_count, Kd_count, Ki_count);
+
+void setupMotorPins()
+{
+  pinMode( L_PWM_PIN, OUTPUT );
+  pinMode( L_DIR_PIN, OUTPUT );
+  pinMode( R_PWM_PIN, OUTPUT );
+  pinMode( R_DIR_PIN, OUTPUT );
+  pinMode( BUZZER_PIN, OUTPUT );
+}
+
+void setup()
+{
+
+  setupEncoder0();
+  setupEncoder1();
+  setupMotorPins();
+
+  //set maximum speed
+  leftAngle.setMax(30);
+  rightAngle.setMax(30);
+  leftposition.setMax(35);
+  rightposition.setMax(35);
+  //  leftWeel.setMax(50);
+  //  rightWeel.setMax(50);
+  BackHomeSpeed.setMax(100);
+
+  //calibrate line sensor
+  analogWrite(BUZZER_PIN, 180);
+  delay(1000);
+  digitalWrite(BUZZER_PIN, LOW);
+  while (millis() < 6000)
+  {
+    lineLeft.calibrate();
+    lineCentre.calibrate();
+    lineRight.calibrate();
+  }
+  analogWrite(BUZZER_PIN, 180);
+  delay(1000);
+  digitalWrite(BUZZER_PIN, LOW);
+  
+  digitalWrite( L_DIR_PIN, LOW  );
+  digitalWrite( R_DIR_PIN, LOW  );
+
+  Serial.begin( 9600 );
+  time_read = millis();
+}
+
+
+void loop()
+{
+
+  time_now = millis();
+  time_elapsed = time_now - time_read;
+  
+  if (time_elapsed > 6000) { //waite for 6 seconds
+
+    Ldata = lineLeft.read_calibrated();
+    Rdata = lineRight.read_calibrated();
+    Cdata = lineCentre.read_calibrated();
+
+          Serial.print(Ldata);
+          Serial.print(", ");
+          Serial.print(Cdata);
+          Serial.print(", ");
+          Serial.println(Rdata);
+
+    switch (w)
+    {
+      case 0:
+      if (Ldata + Rdata + Cdata < 750){
+      
+      
+         //go straight
+         ave_speed = (e0_speed + e1_speed) / 2;
+         float countSpeedLeft = leftCount.update(ave_speed, e0_speed);
+         float countSpeedRight = rightCount.update(ave_speed, e1_speed);
+         coordinates.Update(count_e0, count_e1);
+         analogWrite( L_PWM_PIN, velocity_1 + countSpeedLeft);
+         analogWrite( R_PWM_PIN, velocity_1 + countSpeedRight);
+
+      }else{ 
+          w ++;
+      }
+       break;
+       
+        
+      case 1:
+      
+        if (Ldata + Rdata + Cdata < 700){
+          
+          w ++;
+          
+        }else{
+          
+         d = (Ldata + Rdata) / 2;
+         float leftSpeed = leftWeel.update(d, Ldata);
+         float rightSpeed = rightWeel.update(d, Rdata);
+        
+         float finalSpeedLeft = velocity_2 + leftSpeed;
+         float finalSpeedRight = velocity_2 + rightSpeed;
+        
+        if (finalSpeedLeft >= 0)
+        {
+          digitalWrite( L_DIR_PIN, LOW );
+        }
+        if (finalSpeedLeft < 0)
+        {
+          digitalWrite( L_DIR_PIN, HIGH );
+        }
+        if (finalSpeedRight >= 0)
+        {
+          digitalWrite( R_DIR_PIN, LOW );
+        }
+        if (finalSpeedRight < 0)
+        {
+          digitalWrite( R_DIR_PIN, HIGH );
+        }
+        
+        
+        analogWrite( L_PWM_PIN, abs(finalSpeedLeft));
+        analogWrite( R_PWM_PIN, abs(finalSpeedRight));
+  
+        coordinates.Update(count_e0, count_e1);
+    
+//        Serial.print(finalSpeedLeft);
+//        Serial.print(", ");
+//        Serial.println(finalSpeedRight);
+
+      
+      }
+
+      break;
+      
+      case 2:
+        if(flag){
+          analogWrite( L_PWM_PIN, 0);
+          analogWrite( R_PWM_PIN, 0);
+          
+          analogWrite(BUZZER_PIN, 120);
+          delay(500);
+          digitalWrite(BUZZER_PIN, LOW);
+          delay(1000);
+          
+          flag = false;
+          
+          resetEncoder();
+          coordinates.reset();
+          
+          theta = coordinates.returnTheta();
+          x = coordinates.returnX();
+          x = x * COUNTS_PER_MM;
+          y = coordinates.returnY();
+          y = y * COUNTS_PER_MM;
+          distance = sqrt(x*x + y*y);
+          arc = atan2(y,x);
+          if (arc >= 0)
+          {
+            headingFix = PI - arc;
+            Hdegree = (theta + headingFix) * 180 / PI;
+          }
+          else
+          {
+            headingFix = PI + arc;
+            Hdegree = (theta - headingFix) * 180 / PI;
+          }
+        }
+        
+        BackHome();
+
+        break;
+    }
+    
+    delay(LOOP_DELAY);
+  }
+}
+
+
+
+
+//       Back home
+
+void BackHome()
+{
+  coordinates.Update(count_e0, count_e1);
+   
+  //turning romi
+  theta = coordinates.returnTheta();
+  
+  x = coordinates.returnX();
+  x = x * COUNTS_PER_MM;
+  y = coordinates.returnY();
+  y = y * COUNTS_PER_MM;
+
+// Destination Distance = sqrt(x.^2 + y.^2);
+  
+  arc = atan2(y,x);
+     if (arc >= 0)
+     {
+    Turnhead = PI - arc;
+     }
+     else
+     {
+    Turnhead = PI + arc;
+     }  
+     if (flagTurn){
+      turnRomi(Hdegree*1.00);
+     }
+      if (flagStraight){
+      straightRomi(distance);
+     }
+}
+
+
+//       Position control
+
+void straightRomi(float target_position){
+  
+    float leftoutput = leftposition.update(target_position, count_e0);
+    float rightoutput = rightposition.update(target_position, count_e1);    
+
+//    ave = (e0_speed + e1_speed) / 2;
+//    float speedCompensate = BackHomeSpeed.update(headingFix*10000,Turnhead*10000)
+//    float leftCountSpeedCom = leftBackHomeSpeed.update(ave, e0_speed), float rightCountSpeedCom = rightBackHomeSpeed.update(ave, e1_speed);
+    
+    float left_finalspeed = leftoutput  ;
+    float right_finalspeed = rightoutput  ;
+
+   
+    if (left_finalspeed >= 0 ) {
+      digitalWrite( L_DIR_PIN, HIGH  );
+    } else if (left_finalspeed < 0) {
+      digitalWrite( L_DIR_PIN, LOW  );
+    }
+     if (right_finalspeed >= 0 ) {
+      digitalWrite( R_DIR_PIN, HIGH  );
+    } else if (right_finalspeed < 0 ) {
+      digitalWrite( R_DIR_PIN, LOW  );
+    }
+
+    if (count_e0-count_e1>10){
+right_finalspeed=right_finalspeed+2;
+}
+else if(count_e1-count_e0>10){
+left_finalspeed=left_finalspeed+2;
+}
+    analogWrite( L_PWM_PIN, abs(left_finalspeed) );
+    analogWrite( R_PWM_PIN, abs(right_finalspeed) );    
+}
+
+
+
+//            Degree control
+
+void turnRomi(float target_degree){
+
+    float target = 140 * PI * abs(target_degree) / 360 / 0.152; //transform degrees to counts
+
+    float left_degree = leftAngle.update(-target, count_e0);
+    float right_degree = rightAngle.update(target, count_e1);
+
+      Serial.println(target);
+
+    //turn right
+    if (target_degree >= 0){
+      
+      if (left_degree >= 0 ) {
+        digitalWrite( L_DIR_PIN, HIGH  );
+      } else {
+        digitalWrite( L_DIR_PIN, LOW  );
+      }
+  
+      if (right_degree >= 0 ) {
+        digitalWrite( R_DIR_PIN, HIGH  );
+      } else {
+        digitalWrite( R_DIR_PIN, LOW  );
+      }
+    }
+    
+    //turn left
+    else{
+      
+      if (left_degree >= 0 ) {
+        digitalWrite( L_DIR_PIN, HIGH  );
+      } else{
+        digitalWrite( L_DIR_PIN, LOW  );
+      }
+  
+      if (right_degree >= 0 ) {
+        digitalWrite( R_DIR_PIN, LOW  );
+      } else {
+        digitalWrite( R_DIR_PIN, HIGH  );
+      }
+    }
+    analogWrite( L_PWM_PIN, abs(left_degree));
+    analogWrite( R_PWM_PIN, abs(right_degree));
+    
+
+    if (leftAngle.getError() < 15 && rightAngle.getError() < 15){
+      flagTurn = false;
+      flagStraight = true;
+      analogWrite(BUZZER_PIN, 150);
+      analogWrite( L_PWM_PIN, 0);
+      analogWrite( R_PWM_PIN, 0);
+      delay(500);
+      digitalWrite(BUZZER_PIN, LOW);
+      delay(1000);
+      resetEncoder();
+//      coordinates.reset();
+    }
+    
+} 
